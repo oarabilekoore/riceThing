@@ -25,7 +25,7 @@ var installCmd = &cobra.Command{
 func init() {
 	// flags: skip package installation, skip copying configs
 	installCmd.Flags().BoolVarP(&skipPkgs, "skip-pkgs", "p", false, "skip installing packages")
-	installCmd.Flags().BoolVarP(&skipConfigs, "skip-configs", "c", false, "skip copying config folders")
+	installCmd.Flags().BoolVarP(&skipConfigs, "skip-configs", "c", false, "skip copying config folders and dotfiles")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -36,63 +36,104 @@ func installThing(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	repoPath := args[0]
+
 	// Try to stat the path provided. If it's not a directory this will error.
-	info, err := os.Lstat(args[0])
+	info, err := os.Lstat(repoPath)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
 
-	if info.IsDir() {
-		file, err := os.ReadFile(filepath.Join(args[0], "ricemetadata.json"))
-		if err != nil {
-			fmt.Println("Error reading metadata file:", err)
-			return
-		}
+	if !info.IsDir() {
+		fmt.Println("Provided path is not a directory.")
+		return
+	}
 
-		var parsedMetadata riceThingMetadata
-		if err := json.Unmarshal(file, &parsedMetadata); err != nil {
-			fmt.Println("Error parsing metadata file:", err)
-			return
-		}
+	// read metadata from repoPath
+	metaPath := filepath.Join(repoPath, "ricemetadata.json")
+	file, err := os.ReadFile(metaPath)
+	if err != nil {
+		fmt.Println("Error reading metadata file:", err)
+		return
+	}
 
-		if parsedMetadata.Desktop != desktop {
-			fmt.Println("riceThing cannot continue if your desktop doesn't match metadata info")
-			return
-		}
+	var parsedMetadata riceThingMetadata
+	if err := json.Unmarshal(file, &parsedMetadata); err != nil {
+		fmt.Println("Error parsing metadata file:", err)
+		return
+	}
 
-		// Install packages unless user requested to skip them
-		if !skipPkgs {
-			for _, pkg := range parsedMetadata.Packages {
-				fmt.Printf("Installing package: %s\n", pkg.Name)
+	if parsedMetadata.Desktop != desktop {
+		fmt.Println("WARNING: Your desktop does not match the metadata's info — this may lead to a different experience than expected.")
+	}
 
-				pacmanCmd := exec.Command("sudo", "pacman", "-S", "--noconfirm", pkg.Name)
-				pacmanCmd.Stdout = os.Stdout
-				pacmanCmd.Stderr = os.Stderr
-				pacmanCmd.Stdin = os.Stdin // needed for sudo password prompt
+	// Install packages unless user requested to skip them
+	if !skipPkgs {
+		for _, pkg := range parsedMetadata.Packages {
+			fmt.Printf("Installing package: %s\n", pkg.Name)
 
-				if err := pacmanCmd.Run(); err != nil {
-					fmt.Printf("Failed to install %s: %v\n", pkg.Name, err)
-				}
+			pacmanCmd := exec.Command("sudo", "pacman", "-S", "--noconfirm", pkg.Name)
+			pacmanCmd.Stdout = os.Stdout
+			pacmanCmd.Stderr = os.Stderr
+			pacmanCmd.Stdin = os.Stdin // needed for sudo password prompt
+
+			if err := pacmanCmd.Run(); err != nil {
+				fmt.Printf("Failed to install %s: %v\n", pkg.Name, err)
 			}
-		} else {
-			fmt.Println("Skipping package installation (--skip-pkgs)")
-		}
-
-		// Copy config folders unless skipped
-		if !skipConfigs {
-			for _, folder := range parsedMetadata.ConfigFolders {
-				dst := filepath.Join(homeDir, folder)
-				if err := copyDir(folder, dst); err != nil {
-					fmt.Printf("❌ Failed to copy %s: %s\n", folder, err)
-				} else {
-					fmt.Printf("📦 Copied %s => %s\n", folder, dst)
-				}
-			}
-		} else {
-			fmt.Println("Skipping copying config folders (--skip-configs)")
 		}
 	} else {
-		fmt.Println("Provided path is not a directory.")
+		fmt.Println("Skipping package installation (--skip-pkgs)")
+	}
+
+	// Copy config folders and dotfiles unless skipped
+	if !skipConfigs {
+		// Copy config folders from repoPath/.config/<folder> => $HOME/.config/<folder>
+		for _, folder := range parsedMetadata.ConfigFolders {
+			src := filepath.Join(repoPath, ".config", folder)
+			dst := filepath.Join(homeDir, ".config", folder)
+
+			// If the source doesn't exist in the repo, warn and continue
+			if _, err := os.Lstat(src); err != nil {
+				fmt.Printf("⚠️  Skipping config %s — not found in repo at %s\n", folder, src)
+				continue
+			}
+
+			if err := copyDir(src, dst); err != nil {
+				fmt.Printf("❌ Failed to copy config %s: %s\n", folder, err)
+			} else {
+				fmt.Printf("📦 Copied config %s => %s\n", src, dst)
+			}
+		}
+
+		// Also copy common shell/dotfiles from the repo root to the user's home
+		dotfiles := []string{".bashrc", ".bash_profile", ".profile", ".zshrc", ".xprofile", ".xinitrc"}
+		for _, f := range dotfiles {
+			src := filepath.Join(repoPath, f)
+			dst := filepath.Join(homeDir, f)
+
+			info, err := os.Lstat(src)
+			if err != nil {
+				// not present in repo — skip silently
+				continue
+			}
+
+			if info.IsDir() {
+				if err := copyDir(src, dst); err != nil {
+					fmt.Printf("❌ Failed to copy dotfile dir %s: %s\n", src, err)
+				} else {
+					fmt.Printf("📦 Copied directory %s => %s\n", src, dst)
+				}
+			} else {
+				if err := copyFile(src, dst); err != nil {
+					fmt.Printf("❌ Failed to copy dotfile %s: %s\n", src, err)
+				} else {
+					fmt.Printf("📦 Copied file %s => %s\n", src, dst)
+				}
+			}
+		}
+	} else {
+		fmt.Println("Skipping copying config folders and dotfiles (--skip-configs)")
 	}
 }
+
