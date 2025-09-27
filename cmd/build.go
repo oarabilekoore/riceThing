@@ -107,25 +107,34 @@ func checkOrCreateRiceThingConfig() ([]string, []string, []string, error) {
 			return nil, nil, nil, fmt.Errorf("failed to read include file: %v", err)
 		}
 
-		// Separate folders and dotfiles
 		for _, line := range lines {
 			if line == "DOTFILES" {
 				// Add common dotfiles
 				dotfiles = append(dotfiles, ".bashrc", ".profile", ".bash_profile", ".zshrc", ".xprofile", ".xinitrc")
 			} else if strings.HasPrefix(line, ".") && !strings.Contains(line, "/") {
-				// It's a dotfile (starts with . and has no path separators)
 				dotfiles = append(dotfiles, line)
 			} else {
-				// It's a folder/file path
 				folders = append(folders, line)
 			}
 		}
+
+		// IMPORTANT: If include file exists but is empty (after removing comments),
+		// return empty slices - don't fall back to bundling everything
+		if len(lines) == 0 {
+			fmt.Println("📝 Include file is empty - no configs will be bundled")
+			fmt.Println("   Add entries to ~/.config/ricething/include or use -a flag to bundle everything")
+		}
+
 	} else {
 		fmt.Printf("⚠️  Include file not found at %s, creating example file\n", includeFile)
-		createExampleIncludeFile(includeFile)
+		if err := createExampleIncludeFile(includeFile); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to create include file: %v", err)
+		}
+		fmt.Println("📝 Please populate the include file and run build again")
+		// Return empty slices, don't bundle everything by default
+		return []string{}, []string{}, []string{}, nil
 	}
 
-	// Read packages file
 	var customPackages []string
 	if _, err := os.Stat(packagesFile); err == nil {
 		customPackages, err = readLinesFromFile(packagesFile)
@@ -134,7 +143,10 @@ func checkOrCreateRiceThingConfig() ([]string, []string, []string, error) {
 		}
 	} else {
 		fmt.Printf("⚠️  Packages file not found at %s, creating example file\n", packagesFile)
-		createExamplePackagesFile(packagesFile)
+		if err := createExamplePackagesFile(packagesFile); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to create packages file: %v", err)
+		}
+		// Return empty packages list if file doesn't exist
 	}
 
 	return folders, customPackages, dotfiles, nil
