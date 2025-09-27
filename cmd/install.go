@@ -64,12 +64,13 @@ func installThing(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if parsedMetadata.Desktop != desktop {
+	if parsedMetadata.Desktop != desktopEnvironment {
 		fmt.Println("WARNING: Your desktop does not match the metadata's info — this may lead to a different experience than expected.")
 	}
 
 	// Install packages unless user requested to skip them
 	if !skipPkgs {
+		fmt.Printf("📦 Installing %d packages...\n", len(parsedMetadata.Packages))
 		for _, pkg := range parsedMetadata.Packages {
 			fmt.Printf("Installing package: %s\n", pkg.Name)
 
@@ -88,26 +89,82 @@ func installThing(cmd *cobra.Command, args []string) {
 
 	// Copy config folders and dotfiles unless skipped
 	if !skipConfigs {
-		// Copy config folders from repoPath/.config/<folder> => $HOME/.config/<folder>
-		for _, folder := range parsedMetadata.ConfigFolders {
-			src := filepath.Join(repoPath, ".config", folder)
-			dst := filepath.Join(homeDir, ".config", folder)
+		// Copy traditional .config folders from repoPath/.config/<folder> => $HOME/.config/<folder>
+		configPath := filepath.Join(repoPath, ".config")
+		if _, err := os.Stat(configPath); err == nil {
+			entries, err := os.ReadDir(configPath)
+			if err == nil {
+				for _, entry := range entries {
+					if entry.IsDir() {
+						src := filepath.Join(configPath, entry.Name())
+						dst := filepath.Join(homeDir, ".config", entry.Name())
 
-			// If the source doesn't exist in the repo, warn and continue
-			if _, err := os.Lstat(src); err != nil {
-				fmt.Printf("⚠️  Skipping config %s — not found in repo at %s\n", folder, src)
-				continue
-			}
-
-			if err := copyDir(src, dst); err != nil {
-				fmt.Printf("❌ Failed to copy config %s: %s\n", folder, err)
-			} else {
-				fmt.Printf("📦 Copied config %s => %s\n", src, dst)
+						if err := copyDir(src, dst); err != nil {
+							fmt.Printf("❌ Failed to copy config %s: %s\n", entry.Name(), err)
+						} else {
+							fmt.Printf("📁 Copied config %s => %s\n", src, dst)
+						}
+					}
+				}
 			}
 		}
 
-		// Also copy common shell/dotfiles from the repo root to the user's home
-		dotfiles := []string{".bashrc", ".bash_profile", ".profile", ".zshrc", ".xprofile", ".xinitrc"}
+		// Copy extra folders/files from repoPath/extra/ to appropriate locations
+		extraPath := filepath.Join(repoPath, "extra")
+		if _, err := os.Stat(extraPath); err == nil {
+			fmt.Println("📁 Found extra files/folders, installing to appropriate locations...")
+
+			err := filepath.Walk(extraPath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				// Skip the extra directory itself
+				if path == extraPath {
+					return nil
+				}
+
+				// Get relative path from extra directory
+				relPath, err := filepath.Rel(extraPath, path)
+				if err != nil {
+					return err
+				}
+
+				// Determine destination
+				dst := filepath.Join(homeDir, relPath)
+
+				// Create parent directory if it doesn't exist
+				if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+					fmt.Printf("❌ Failed to create directory %s: %v\n", filepath.Dir(dst), err)
+					return nil
+				}
+
+				if info.IsDir() {
+					// Create directory if it doesn't exist
+					if err := os.MkdirAll(dst, info.Mode()); err != nil {
+						fmt.Printf("❌ Failed to create directory %s: %v\n", dst, err)
+					} else {
+						fmt.Printf("📁 Created directory %s\n", dst)
+					}
+				} else {
+					// Copy file
+					if err := copyFile(path, dst); err != nil {
+						fmt.Printf("❌ Failed to copy file %s: %v\n", relPath, err)
+					} else {
+						fmt.Printf("📄 Copied file %s => %s\n", path, dst)
+					}
+				}
+
+				return nil
+			})
+
+			if err != nil {
+				fmt.Printf("Error walking extra directory: %v\n", err)
+			}
+		}
+
+		// Copy common shell/dotfiles from the repo root to the user's home
+		dotfiles := []string{".bashrc", ".bash_profile", ".profile", ".zshrc", ".xprofile", ".xinitrc", ".vimrc", ".tmux.conf"}
 		for _, f := range dotfiles {
 			src := filepath.Join(repoPath, f)
 			dst := filepath.Join(homeDir, f)
@@ -122,18 +179,19 @@ func installThing(cmd *cobra.Command, args []string) {
 				if err := copyDir(src, dst); err != nil {
 					fmt.Printf("❌ Failed to copy dotfile dir %s: %s\n", src, err)
 				} else {
-					fmt.Printf("📦 Copied directory %s => %s\n", src, dst)
+					fmt.Printf("📁 Copied directory %s => %s\n", src, dst)
 				}
 			} else {
 				if err := copyFile(src, dst); err != nil {
 					fmt.Printf("❌ Failed to copy dotfile %s: %s\n", src, err)
 				} else {
-					fmt.Printf("📦 Copied file %s => %s\n", src, dst)
+					fmt.Printf("📄 Copied file %s => %s\n", src, dst)
 				}
 			}
 		}
+
+		fmt.Println("✅ Installation complete!")
 	} else {
 		fmt.Println("Skipping copying config folders and dotfiles (--skip-configs)")
 	}
 }
-
