@@ -23,6 +23,7 @@ riceThing is a command-line tool that allows Linux users to easily package their
 
 - Linux system with `pacman` package manager (Arch Linux, Manjaro, etc.)
 - Go 1.16+ (for building from source)
+- `sudo` privileges (for package installation during install command)
 
 ### From Source
 
@@ -40,7 +41,11 @@ sudo mv ricething /usr/local/bin/
 Create a shareable package of your current desktop configuration:
 
 ```bash
+# First run creates configuration files
 ricething build -o my-rice-bundle
+
+# Bundle everything automatically (all configs + all packages)
+ricething build -a -o my-rice-bundle
 ```
 
 ### Install Someone's Rice
@@ -66,40 +71,54 @@ ricething build [flags]
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--out` | `-o` | Output directory for the bundle | `.` (current directory) |
-| `--no-configs` | | Skip copying `~/.config` folders | `false` |
-| `--no-packages` | | Don't include installed packages in metadata | `false` |
-| `--dotfiles` | | Comma-separated list of dotfiles to include | `""` |
-| `--include-dotfiles` | | Include common dotfiles (.bashrc, .profile, etc.) | `false` |
+| `--all` | `-a` | Bundle all config folders and all installed packages | `false` |
+
+#### Configuration-Based Building
+
+On first run, riceThing creates configuration files in `~/.config/ricething/`:
+
+- **`include`** - Lists folders/files to include (one per line)
+- **`packages`** - Lists specific packages to include (one per line)
+
+The `include` file supports:
+- Paths relative to home directory (e.g., `.config/awesome`, `Pictures/wallpapers`)
+- Individual dotfiles (e.g., `.bashrc`, `.vimrc`)
+- The special keyword `DOTFILES` to include common shell files
+
+#### Bundle All Mode (`-a` flag)
+
+When using `--all`, riceThing bypasses configuration files and includes:
+- All directories in `~/.config/` (except `ricething`)
+- All installed packages from `pacman -Q`
+- Common dotfiles (`.bashrc`, `.profile`, `.bash_profile`, `.zshrc`, `.xprofile`, `.xinitrc`)
 
 #### What Gets Packaged
 
 - **System metadata**: Distribution name, desktop environment, shell
-- **Installed packages**: Complete list with versions (via `pacman -Q`)
-- **Config folders**: All directories in `~/.config/`
-- **Dotfiles**: Optional inclusion of dotfiles from home directory
+- **Packages**: From packages file or all installed (with `--all`)
+- **Config folders**: From include file or all `.config` folders (with `--all`)
+- **Dotfiles**: Specified in include file or common ones (with `--all`)
+- **Extra files**: Any non-config paths specified in include file
 
 #### Examples
 
 ```bash
-# Basic build - packages everything to current directory
+# First run - creates config files and exits
 ricething build
 
-# Build to specific directory with dotfiles
-ricething build -o ~/my-rice --include-dotfiles
+# Build using configuration files
+ricething build -o ~/my-rice
 
-# Build with custom dotfiles
-ricething build --dotfiles=".bashrc,.zshrc,.vimrc"
+# Bundle everything automatically
+ricething build -a -o ~/complete-rice
 
-# Build without packages (configs only)
-ricething build --no-packages
-
-# Build packages only (no configs)
-ricething build --no-configs
+# Build to current directory using config files
+ricething build
 ```
 
 ### `install` Command
 
-Install a rice configuration from a local directory or bundle.
+Install a rice configuration from a local directory.
 
 ```bash
 ricething install <path> [flags]
@@ -116,38 +135,67 @@ ricething install <path> [flags]
 | `--skip-pkgs` | `-p` | Skip installing packages | `false` |
 | `--skip-configs` | `-c` | Skip copying config folders and dotfiles | `false` |
 
-#### What Gets Installed
+#### Installation Process
 
-- **Packages**: Installs all packages listed in metadata using `pacman`
-- **Config folders**: Copies from `bundle/.config/` to `~/.config/`
-- **Dotfiles**: Automatically copies common shell files (.bashrc, .zshrc, .profile, .xinitrc, etc.)
-- **Missing files**: Warns about missing files but continues installation
+1. **Packages**: Installs packages using `sudo pacman -S --noconfirm`
+2. **Config folders**: Copies from `bundle/.config/` to `~/.config/`
+3. **Extra files**: Copies from `bundle/extra/` to appropriate home locations
+4. **Dotfiles**: Copies common shell files from bundle root to home directory
 
-- **Warning for desktop mismatch**: Shows warning if desktop environments don't match (no longer blocks installation)
-- Requires `sudo` for package installation
-- Creates backups recommended (not automated)
+#### Compatibility Checks
+
+- **Desktop environment mismatch**: Shows warning but continues installation
+- **Missing files**: Warns about missing files but continues
+- **File conflicts**: Overwrites existing files without backup
 
 #### Examples
 
 ```bash
-# Full installation
+# Full installation (packages + configs)
 ricething install ./awesome-rice-bundle
 
-# Install configs only
+# Install configs only (skip packages)
 ricething install ./rice-bundle --skip-pkgs
 
-# Install packages only  
+# Install packages only (skip configs)
 ricething install ./rice-bundle --skip-configs
 ```
 
 ## Configuration
 
-riceThing automatically detects your system configuration:
+### System Detection
 
-- **Distribution**: Read from `/etc/os-release`
+riceThing automatically detects:
+- **Distribution**: From `/etc/os-release` (ID field)
 - **Desktop Environment**: From `$XDG_SESSION_DESKTOP`
 - **Shell**: From `$SHELL` environment variable
 - **Home Directory**: From `$HOME` environment variable
+
+### riceThing Configuration Files
+
+Located in `~/.config/ricething/`:
+
+#### `include` file format:
+```
+# Comments start with #
+.config/awesome
+.config/kitty
+Pictures/wallpapers
+Documents/scripts
+DOTFILES
+.vimrc
+.tmux.conf
+```
+
+#### `packages` file format:
+```
+# Comments start with #
+firefox
+discord
+neovim
+awesome
+kitty
+```
 
 ## File Structure
 
@@ -160,6 +208,9 @@ rice-bundle/
 │   ├── awesome/              # Window manager configs
 │   ├── kitty/                # Terminal configs
 │   └── ...
+├── extra/                     # Non-config files (optional)
+│   ├── Pictures/wallpapers/  # Custom paths from include file
+│   └── Documents/scripts/
 ├── .bashrc                   # Dotfiles (if included)
 ├── .zshrc
 ├── .profile
@@ -173,13 +224,17 @@ The `ricemetadata.json` file contains:
 
 ```json
 {
-  "name": "arch",
+  "distro": "arch",
   "shell": "/bin/bash",
-  "desktop": "awesome",
+  "de": "awesome",
   "packages": [
     {
       "name": "firefox",
       "version": "119.0.1-1"
+    },
+    {
+      "name": "custom-package",
+      "version": "unknown"
     }
   ],
   "configs": [
@@ -194,32 +249,65 @@ The `ricemetadata.json` file contains:
 
 ### Complete Rice Workflow
 
-1. **Customize your desktop** with your preferred:
-   - Window manager/desktop environment
-   - Terminal emulator
-   - Text editors
-   - Themes and icons
+1. **Customize your desktop** with preferred tools and themes
 
-2. **Package your rice**:
+2. **Configure riceThing** (on first run):
    ```bash
-   ricething build -o ~/my-awesome-rice --include-dotfiles
+   ricething build  # Creates config files
+   # Edit ~/.config/ricething/include and ~/.config/ricething/packages
    ```
 
-3. **Share your bundle** (upload to GitHub, etc.)
+3. **Package your rice**:
+   ```bash
+   ricething build -o ~/my-awesome-rice
+   ```
 
-4. **Others can install**:
+4. **Share your bundle** (upload to GitHub, etc.)
+
+5. **Others can install**:
    ```bash
    git clone https://github.com/user/awesome-rice
    ricething install ./awesome-rice
    ```
 
+### Bundle Everything Quickly
+
+```bash
+# Skip configuration, include everything
+ricething build -a -o ~/complete-system-rice
+```
+
 ### Selective Installation
 
 ```bash
-# Try configs first, then packages if satisfied
+# Test configs first
 ricething install ./rice-bundle --skip-pkgs
-# If happy with configs:
+
+# If satisfied, install packages
 ricething install ./rice-bundle --skip-configs
+```
+
+### Custom Includes Example
+
+Create `~/.config/ricething/include`:
+```
+.config/awesome
+.config/kitty
+.config/rofi
+Pictures/wallpapers
+Documents/scripts
+DOTFILES
+.vimrc
+.tmux.conf
+```
+
+Create `~/.config/ricething/packages`:
+```
+firefox
+discord
+neovim
+awesome
+kitty-git
 ```
 
 ## Troubleshooting
@@ -228,28 +316,43 @@ ricething install ./rice-bundle --skip-configs
 
 **"Unable To Fetch Distribution Name"**
 - Ensure `/etc/os-release` exists and is readable
-- riceThing continues without this info
+- riceThing continues without this info but shows a warning
 
 **Package Installation Fails**
 - Verify you have `sudo` privileges
 - Check if packages exist in your repositories
-- Some packages might have different names across distributions
+- Some packages might have different names or be unavailable
+- Packages marked as "unknown" version aren't installed on build system
 
 **Config Copy Failures**
 - Check file permissions in `~/.config`
 - Ensure sufficient disk space
-- Some applications might be running and locking config files
+- Close applications that might be using config files
 
 **Desktop Environment Mismatch**
-- riceThing now shows a warning instead of blocking installation
-- This allows more flexibility while still informing users of potential issues
+- riceThing shows a warning but continues installation
+- Different desktop environments may not be compatible
+- Consider installing configs only first to test
+
+**Configuration Files Not Found**
+- Run `ricething build` once to create example configuration files
+- Edit `~/.config/ricething/include` and `~/.config/ricething/packages`
+- Use `--all` flag to skip configuration files entirely
 
 ### Current Limitations
 
-- **Arch Linux only**: Currently hardcoded for `pacman`
-- **No git support**: Install command doesn't handle git URLs yet  
-- **No backups**: Overwrites existing configs without backup
-- **Missing file handling**: Warns about missing files but continues (which is usually good)
+- **Arch Linux only**: Currently hardcoded for `pacman` package manager
+- **No git support**: Install command doesn't handle git URLs
+- **No automatic backups**: Overwrites existing configs without backup
+- **Path restrictions**: Only supports paths relative to home directory
+- **No AUR support**: Only official repository packages
+
+### Debug Tips
+
+1. **Verify bundle structure**: Check that `ricemetadata.json` exists
+2. **Test selective install**: Use `--skip-pkgs` or `--skip-configs` to isolate issues
+3. **Check package names**: Ensure packages in bundle exist in your repositories
+4. **File permissions**: Ensure write access to `~/.config` and home directory
 
 ### Getting Help
 
@@ -259,6 +362,20 @@ ricething build --help
 ricething install --help
 ```
 
+## Contributing
+
+riceThing is open source under the MIT License. Contributions welcome!
+
+### Potential Improvements
+
+- Support for other package managers (apt, dnf, etc.)
+- Git repository support for install command
+- Automatic backup creation
+- AUR package support
+- Cross-distribution compatibility
+- Package dependency resolution
+- Selective file restoration
+
 ## License
 
-MIT.
+MIT License - see LICENSE file for details.
