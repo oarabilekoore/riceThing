@@ -4,12 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var buildCmd = &cobra.Command{
@@ -19,47 +20,29 @@ var buildCmd = &cobra.Command{
 }
 
 type Package struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name string `json:"name"`
 }
 
 type riceThingMetadata struct {
-	System        string    `json:"name"`
-	Shell         string    `json:"shell"`
-	Desktop       string    `json:"desktop"`
+	DistributionName        string    `json:"distro"`
+	Shell                   string    `json:"shell"`
+	Desktop       string    `json:"de"`
 	Packages      []Package `json:"packages"`
 	ConfigFolders []string  `json:"configs"`
 }
 
-var system, desktop, homeDir, shell string
+
+var distributionName, desktopEnvironment, homeDir, shell string
 var installedPackages, foldersToBundle []string
 
-// flags
-var (
-	outDir         string
-	noConfigs      bool
-	noPackages     bool
-	dotfilesCSV    string
-	includeDotfiles bool
-)
 
 func init() {
-	desktop = os.Getenv("XDG_SESSION_DESKTOP")
+	desktopEnvironment = os.Getenv("XDG_SESSION_DESKTOP")
 	homeDir = os.Getenv("HOME")
 	shell = os.Getenv("SHELL")
 	rootCmd.AddCommand(buildCmd)
 
-	// flags
-	buildCmd.Flags().StringVarP(&outDir, "out", "o", ".", "output directory for the bundle")
-	buildCmd.Flags().BoolVar(&noConfigs, "no-configs", false, "do not copy ~/.config folders")
-	buildCmd.Flags().BoolVar(&noPackages, "no-packages", false, "do not include installed packages in metadata")
-	buildCmd.Flags().StringVar(&dotfilesCSV, "dotfiles", "", "comma-separated list of dotfiles to include (e.g. .bashrc,.profile)")
-	buildCmd.Flags().BoolVar(&includeDotfiles, "include-dotfiles", false, "include a default set of common dotfiles (.bashrc, .profile)")
-}
-
-func getDistributionName() {
-	// Read the system-wide /etc/os-release
-	file, err := os.Open("/etc/os-release")
+	file, err := os.Open("/etc/os-release") //get the distribution name
 	if err != nil {
 		fmt.Println("WARNING: Unable To Fetch Distribution Name")
 		return
@@ -71,43 +54,19 @@ func getDistributionName() {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "ID=") {
-			system = strings.Trim(strings.SplitN(line, "=", 2)[1], `"`)
+			distributionName = strings.Trim(strings.SplitN(line, "=", 2)[1], `"`)
 			return
 		}
 	}
 }
 
-func getInstalledPackages() {
-	cmd := exec.Command("pacman", "-Q")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		panic(err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		panic(err)
-	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		installedPackages = append(installedPackages, scanner.Text())
-	}
-
-	if err := scanner.Err(); err != nil {
-		panic(err)
-	}
-
-	if err := cmd.Wait(); err != nil {
-		panic(err)
-	}
-}
 
 func buildMetadataFile(meta riceThingMetadata) error {
-	// Ensure output directory exists
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o755); err != nil { // ensure output directory exists
 		return err
 	}
 
-	outFile := filepath.Join(outDir, "ricemetadata.json")
+	outFile := filepath.Join(outDir, "ricemetadata.json") //create metadata file
 	file, err := os.Create(outFile)
 	if err != nil {
 		return err
@@ -125,45 +84,24 @@ func buildMetadataFile(meta riceThingMetadata) error {
 }
 
 func bundleRice(cmd *cobra.Command, args []string) {
-	// collect list of ~/.config folders (only if we're copying configs)
-	if !noConfigs {
-		cfgPath := filepath.Join(homeDir, ".config")
-		folders, err := os.ReadDir(cfgPath)
-		if err != nil {
-			fmt.Printf("ERROR: Unable to read config folder: %s\n", err)
-			// continue — user might still want dotfiles or packages
-		} else {
-			for _, listOfFolders := range folders {
-				if listOfFolders.IsDir() {
-					foldersToBundle = append(foldersToBundle, listOfFolders.Name())
-				}
-			}
-		}
-	}
 
-	// installed packages
 	var parsedPackages []Package
-	if !noPackages {
-		getInstalledPackages()
-		// Convert installedPackages from []string to []Package
-		for _, pkg := range installedPackages {
-			parts := strings.Fields(pkg)
-			if len(parts) == 2 {
-				parsedPackages = append(parsedPackages, Package{
-					Name:    parts[0],
-					Version: parts[1],
-				})
-			}
+
+
+	// Convert installedPackages from []string to []Package
+	for _, pkg := range installedPackages {
+		parts := strings.Fields(pkg)
+		if len(parts) == 2 {
+			parsedPackages = append(parsedPackages, Package{
+				Name:    parts[0],
+				Version: parts[1],
+			})
 		}
-		getDistributionName()
-	} else {
-		getDistributionName() // still useful even without packages
-	}
 
 	meta := riceThingMetadata{
-		System:        system,
+		distributionName:        distributionName,
 		Shell:         shell,
-		Desktop:       desktop,
+		Desktop:       desktopEnvironment,
 		Packages:      parsedPackages,
 		ConfigFolders: foldersToBundle,
 	}
@@ -190,7 +128,6 @@ func bundleRice(cmd *cobra.Command, args []string) {
 		fmt.Println("Skipping ~/.config copy (--no-configs)")
 	}
 
-	// copy dotfiles if requested
 	var dotfiles []string
 	if includeDotfiles {
 		// sensible defaults
@@ -214,32 +151,6 @@ func bundleRice(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	for _, f := range uniqueDotfiles {
-		src := filepath.Join(homeDir, f)
-		dest := filepath.Join(outDir, f)
-
-		// if it's a directory, copy directory; else copy file
-		info, err := os.Lstat(src)
-		if err != nil {
-			fmt.Printf("⚠️  Skipping dotfile %s (not found)\n", src)
-			continue
-		}
-		if info.IsDir() {
-			if err := copyDir(src, dest); err != nil {
-				fmt.Printf("❌ Failed to copy dir %s: %s\n", src, err)
-			} else {
-				fmt.Printf("📦 Copied dir %s => %s\n", src, dest)
-			}
-		} else {
-			if err := copyFile(src, dest); err != nil {
-				fmt.Printf("❌ Failed to copy file %s: %s\n", src, err)
-			} else {
-				fmt.Printf("📦 Copied file %s => %s\n", src, dest)
-			}
-		}
-	}
-
-	// done
 	fmt.Println("Build complete.")
 }
 
@@ -292,4 +203,3 @@ func copyFile(srcFile, destFile string) error {
 	_, err = io.Copy(dest, src)
 	return err
 }
-
